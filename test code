@@ -1,0 +1,31 @@
+// C++ code
+#define LDR 34
+// const int motor_pin = 6;
+int pwm = 0, x = 0;
+void setup()
+{
+  Serial.begin(9600);
+  // pinMode(6,OUTPUT);
+  pinMode(33,OUTPUT);
+  pinMode(32,OUTPUT);
+  pinMode(25,OUTPUT);
+  pwm = map(x,0,10,0,255);
+  x = 5;
+  analogWrite(5,x);
+  
+ }
+
+void loop()
+{
+  int light = analogRead(LDR);
+  Serial.println(light);
+  delay(100);
+  if(light <= 300){
+    digitalWrite(32,HIGH);
+ 	digitalWrite(33,LOW);
+  }
+  if(light > 300){
+  	digitalWrite(32,LOW);
+ 	digitalWrite(33,HIGH);
+  }
+}
