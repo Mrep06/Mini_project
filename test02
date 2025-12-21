@@ -1,0 +1,133 @@
+#include <WiFi.h>
+#include <MQTT.h>
+
+// --- กำหนดขาอุปกรณ์ ---
+#define LDR_PIN 34
+const int MOTOR_IN1 = 32;
+const int MOTOR_IN2 = 33;
+const int MOTOR_ENA = 25; 
+
+// --- ตั้งค่า WiFi และ MQTT ---
+const char ssid[] = "P11";
+const char pass[] = "3333333..";
+
+const char mqtt_broker[] = "test.mosquitto.org";
+const char mqtt_topic_sub[] = "home/command";   // หัวข้อสำหรับรับคำสั่ง (สั่งงาน)
+const char mqtt_topic_pub[] = "home/status";    // หัวข้อสำหรับส่งค่าสถานะ (แสดงผล)
+const char mqtt_client_id[] = "esp32_smart_clothesline_v2"; 
+int MQTT_PORT = 1883;
+
+WiFiClient net;
+MQTTClient client;
+
+unsigned long lastMillis = 0;
+bool isAutoMode = true; // ตัวแปรเก็บสถานะโหมด (true = ออโต้, false = สั่งเอง)
+String currentAction = "Waiting"; // เก็บสถานะการทำงานปัจจุบัน
+
+void connect() {
+  Serial.print("Checking WiFi...");
+  while (WiFi.status() != WL_CONNECTED) {
+    Serial.print(".");
+    delay(1000);
+  }
+
+  Serial.print("\nConnecting to MQTT...");
+  while (!client.connect(mqtt_client_id)) {
+    Serial.print(".");
+    delay(1000);
+  }
+  Serial.println("\nConnected!");
+
+  // Subscribe หัวข้อรับคำสั่ง
+  client.subscribe(mqtt_topic_sub);
+}
+
+// ฟังก์ชันสั่งมอเตอร์เก็บผ้า
+void motorCollect() {
+  digitalWrite(MOTOR_IN1, LOW);
+  digitalWrite(MOTOR_IN2, HIGH);
+  currentAction = "COLLECTING (เก็บผ้า)";
+}
+
+// ฟังก์ชันสั่งมอเตอร์ตากผ้า
+void motorExtend() {
+  digitalWrite(MOTOR_IN1, HIGH);
+  digitalWrite(MOTOR_IN2, LOW);
+  currentAction = "EXTENDING (ตากผ้า)";
+}
+
+// ฟังก์ชันรับข้อความจาก MQTT (จากเว็บ/แอป)
+void messageReceived(String &topic, String &payload) {
+  Serial.println("Incoming: " + topic + " - " + payload);
+  
+  // แปลงข้อความให้เป็นตัวเล็กทั้งหมดเพื่อลดความผิดพลาด
+  payload.toLowerCase(); 
+
+  if (payload == "auto") {
+    isAutoMode = true;
+    Serial.println("Switched to AUTO Mode");
+  } 
+  else if (payload == "keep") { // สั่งเก็บ
+    isAutoMode = false;
+    motorCollect();
+    Serial.println("Switched to MANUAL: Force Collect");
+  } 
+  else if (payload == "out") { // สั่งตาก
+    isAutoMode = false;
+    motorExtend();
+    Serial.println("Switched to MANUAL: Force Extend");
+  }
+}
+
+void setup() {
+  Serial.begin(9600);
+
+  pinMode(MOTOR_IN1, OUTPUT);
+  pinMode(MOTOR_IN2, OUTPUT);
+  pinMode(MOTOR_ENA, OUTPUT);
+  digitalWrite(MOTOR_ENA, HIGH); // เปิดมอเตอร์ทำงานเต็มกำลัง
+
+  WiFi.begin(ssid, pass);
+  client.begin(mqtt_broker, MQTT_PORT, net);
+  client.onMessage(messageReceived);
+
+  connect();
+}
+
+void loop() {
+  client.loop();
+  delay(10); 
+
+  if (!client.connected()) {
+    connect();
+  }
+
+  // อ่านค่าแสง
+  int light = analogRead(LDR_PIN);
+
+  // --- ส่วนควบคุมมอเตอร์ ---
+  if (isAutoMode) {
+    // ถ้าอยู่ในโหมด Auto ให้ทำงานตามแสง
+    if (light > 300) {
+      motorCollect(); // แดดแรง -> เก็บ (สมมติว่าแดดแรงเกินไป หรือเปลี่ยนเป็น light < 300 ตามความเหมาะสมของ LDR)
+      // *หมายเหตุ: ปกติ LDR ค่าแสงมาก = แดดแรง, ค่าน้อย = มืด
+      // ถ้าต้องการ "มืดแล้วเก็บ" ให้แก้เงื่อนไขตรงนี้
+    } else {
+      motorExtend();  // แสงน้อย -> ตาก (หรือหยุด)
+    }
+  }
+  // ถ้า isAutoMode == false (Manual) ไม่ต้องทำอะไรเพิ่ม เพราะทำตามคำสั่งใน messageReceived แล้ว
+
+  // --- ส่วนส่งข้อมูลกลับไปแสดงผล (ทุก 2 วินาที) ---
+  if (millis() - lastMillis > 2000) {
+    lastMillis = millis();
+    
+    String modeStr = isAutoMode ? "AUTO" : "MANUAL";
+    
+    // รูปแบบข้อความที่จะส่ง: "Mode: AUTO | Light: 450 | Status: COLLECTING"
+    String msg = "Mode: " + modeStr + " | Light: " + String(light) + " | Status: " + currentAction;
+    
+    client.publish(mqtt_topic_pub, msg);
+    Serial.println("Report sent: " + msg);
+  }
+}
